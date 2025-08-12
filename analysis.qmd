@@ -161,7 +161,6 @@ d_mirt <- d |>
 
 
 ```{r irt}
-#| include: false
 
 if (file.exists(here(models_dir, "mirt_fit_vic.rds")) &
     params$run_models_again == FALSE) {
@@ -238,7 +237,6 @@ d_mirt <- d_mirt |>
 
 ```{r vic_hg_model}
 #| echo: true
-#| include: false
 
 if (file.exists(here(models_dir, "vic_model_hurdle_gaus.rds")) & 
     params$run_models_again == FALSE) {
@@ -440,7 +438,7 @@ we could look at is 1, meaning we treat pupils with victimisation scores above
 1 standard deviation as being victimised. Then we can fit a binomial model.
 
 ```{r vic_bin_model}
-#| include: false
+#| echo: true
 
 d_mirt <- d_mirt |> 
   mutate(vic_bin = ifelse(vic > 1, 1, 0))
