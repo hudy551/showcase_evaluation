@@ -338,7 +338,7 @@ in comparison to control schools.
 pd_group_contrasts_by_wave |>
     mutate(wave = factor(wave, levels = c("baseline", "wave_1", "wave_2"),
                        labels = c("baseline", "1. wave (+8 months)", 
-                                  "2. wave (+1 year)"))) |> 
+                                  "2. wave (+ 20 months)"))) |> 
   ggplot(
     aes(
       x = wave,
