@@ -1,9 +1,6 @@
 ---
 title: "Anti-bullying programme evaluation"
 bibliography: references.bib
-project:
-  type: website
-  output-dir: docs
 execute:
   echo: false
   warning: false
