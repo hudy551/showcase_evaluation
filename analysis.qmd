@@ -78,7 +78,7 @@ verbal and covert (e.g. social exclusion) forms of bullying/victimisation.
 The data provides answers to the victimisation items by pupils from intervention schools
 (with anti-bullying programme) and control schools (no anti-bullying programme) 
 across three time points -- baseline, first wave (after approx. 8 months) and
-second wave (approx. a year and 8 months after baseline). Each school, class and pupil
+second wave (approx. 20 months after baseline). Each school, class and pupil
 (if they took part in at least two measurements) has a unique id. Regarding sociodemographic
 variables, there is age and gender (if pupils provided this information).
 
@@ -391,7 +391,7 @@ pd_group_preds_by_wave <- group_preds_by_wave |>
   mutate(draw - abs(min(d_mirt$vic, na.rm = TRUE)),
          wave = factor(wave, levels = c("baseline", "wave_1", "wave_2"),
                        labels = c("baseline", "1. wave (+8 months)", 
-                                  "2. wave (+1 year)"))) |> 
+                                  "2. wave (+20 months)"))) |> 
   ggplot(
     aes(
       x = wave,
@@ -501,7 +501,7 @@ pd_vic_bin_avg_pred <- vic_bin_avg_pred |>
 pd_vic_bin_avg_pred %>%
   mutate(wave = factor(wave, levels = c("baseline", "wave_1", "wave_2"),
                        labels = c("baseline", "1. wave (+8 months)", 
-                                  "2. wave (+1 year)"))) |> 
+				  "2. wave (+20 months)"))) |> 
   ggplot(
     aes(
       x = wave,
@@ -572,7 +572,7 @@ vic_plot_by_group <- ggplot(pd_vic_bin_avg_pred, aes(
     ~ factor(wave,
       levels = c("baseline", "wave_1", "wave_2"),
       labels = c("baseline", "1. wave (+8 months)", 
-                                  "2. wave (+1 year)")
+                                  "2. wave (+20 months)")
     ),
     ncol = 1
   )
