@@ -1,0 +1,661 @@
+---
+title: "Anti-bullying programme evaluation"
+bibliography: references.bib
+project:
+  type: website
+  output-dir: docs
+execute:
+  echo: false
+  warning: false
+  error: false
+format:
+  html:
+    toc: true
+    code-fold: true
+    source: repo
+    out-width: "70%"
+params:
+  run_models_again: false
+---
+
+```{css, justify_text}
+#| echo: false
+p {
+  text-align: justify
+}
+```
+
+```{r setup}
+library(brms)
+library(tidyverse)
+library(here)
+library(reschola)
+library(marginaleffects)
+library(tidybayes)
+library(glue)
+library(patchwork)
+library(ggpattern)
+library(knitr)
+library(kableExtra)
+library(mirt)
+library(report)
+
+source("helpers.R")
+
+d <- read_rds(here("data/sim_d.rds"))
+
+# folder for saving models
+models_dir <- here("models")
+
+if (!dir.exists(models_dir)) {
+  dir.create(models_dir)
+}
+
+# set some global Stan options
+options(mc.cores = parallel::detectCores(), brms.backend = "cmdstanr")
+
+chains <- 4
+iter <- 2000
+warmup <- 1000
+bayes_seed <- 1234
+
+# folder for saving plots
+plots_dir <- here("plots")
+
+if (!dir.exists(plots_dir)) {
+  dir.create(plots_dir)
+}
+
+theme_set(custom_theme())
+```
+
+# Introduction
+
+This is a showcase analysis of an anti-bullying programme using simulated data
+based on real-world data patterns. The main variable of interest is self-reported 
+bullying victimisation by pupils, as measured by the 
+*Florence Bullying-Victimisation Scales* [@palladino2015psychometric]. 
+The victimisation subscale used here consists of 10 items covering various physical, 
+verbal and covert (e.g. social exclusion) forms of bullying/victimisation. 
+
+The data provides answers to the victimisation items by pupils from intervention schools
+(with anti-bullying programme) and control schools (no anti-bullying programme) 
+across three time points -- baseline, first wave (after approx. 8 months) and
+second wave (approx. a year and 8 months after baseline). Each school, class and pupil
+(if they took part in at least two measurements) has a unique id. Regarding sociodemographic
+variables, there is age and gender (if pupils provided this information).
+
+```{r codebook}
+# d |> 
+#   select(matches("vic_\\d+")) |> 
+#   map(\(x) attr(x, "label")) |> 
+#   unlist() |> 
+#   as.data.frame.vector(nm = "label") |> 
+#   kable(caption = "FBVS victimisation scale items") |> 
+#   kable_styling()
+```
+
+
+# Descriptives
+
+On every item, most pupils tend to answer that they have never experienced the given
+victimisation form.
+
+```{r plot_bars}
+#| fig-align: center
+#| fig-width: 10
+
+d |> 
+  pivot_longer(matches("vic_\\d+")) |> 
+  ggplot(aes(x = value, fill = value)) +
+  geom_bar(stat = "count") +
+  scale_x_discrete(labels = c("never" = 0, 
+                              "once or twice" = 1,
+                              "one or two times a month" = 2,
+                              "once a week" = 3,
+                              "several times a week" = 4)) +
+  scale_fill_manual(name = NULL,
+                    values = c(rev(MetBrewer::met.brewer("Hiroshige", 5)),
+                               lightgray)) +
+  facet_wrap(~name, labeller = schola_labeller(dict_from_data(d), width = 25))
+```
+
+As one would expect, there are also gender differences in how pupils answer these
+items. Boys reported experiencing physical bullying more often than girls,
+girls reported that rumours have been spread about them more often than boys.
+
+```{r plot_bars_gender}
+#| fig-align: center
+#| fig-width: 10
+
+d |> 
+  pivot_longer(matches("vic_\\d+")) |> 
+  filter(gender %in% c("Girl", "Boy")) |> 
+  summarise(n = n(), .by = c(gender, name, value)) |> 
+  mutate(prop = n / sum(n), .by = c(gender, name)) |>
+  ggplot(aes(y = prop, x = value, fill = gender)) +
+  geom_col(position = "dodge") +
+  scale_x_discrete(labels = c("never" = 0, 
+                              "once or twice" = 1,
+                              "one or two times a month" = 2,
+                              "once a week" = 3,
+                              "several times a week" = 4)) + 
+  scale_fill_manual(name = NULL,
+                    values = c("#FF2442", "#3DB2FF",
+                               lightgray)) +
+  scale_y_percent() +
+  facet_wrap(~name, labeller = schola_labeller(dict_from_data(d), width = 25)) +
+  labs(title = "**Gender differences**")
+  
+```
+
+# IRT
+
+Using Item Response Theory, we can estimate victimisation as a latent variable.
+This way, we obtain a Z-score. In the process, we can 
+make sure that all the victimisation variables correlate positively with each other.
+
+```{r irt_prep_data}
+#| fig-align: center
+
+d_mirt <- d |> 
+  make_mirt_data(vic_codebook, plot = TRUE)
+```
+
+
+```{r irt}
+#| include: false
+
+if (file.exists(here(models_dir, "mirt_fit_vic.rds")) &
+    params$run_models_again == FALSE) {
+  mirt_fit_vic <- read_rds(here(models_dir, "mirt_fit_vic.rds"))
+} else {
+  mirtCluster(parallel::detectCores())
+  
+  mirt_fit_vic <- d_mirt %>%
+    filter(wave == "baseline") %>%
+    fit_grm(vic_codebook)
+  
+  write_rds(mirt_fit_vic, here(models_dir, "mirt_fit_vic.rds"))
+  
+  mirtCluster(remove = TRUE)
+}
+
+d_mirt <- d_mirt |> 
+  bind_thetas(mirt_fit_vic, vic_codebook, method = NULL) %>%
+  reschola::recover_labs(d)
+
+```
+
+
+```{r density}
+#| fig-align: center
+
+d_mirt |>
+  mutate(wave = factor(wave, levels = c("baseline", "wave_1", "wave_2"),
+                       labels = c("baseline", "1. wave (+8 months)", 
+                                  "2. wave (+20 months)"))) |> 
+  ggplot(aes(x = vic, fill = exp_group,
+             linetype = exp_group, col = exp_group)) +
+  geom_density(alpha = .3, linewidth = .3) +
+  scale_fill_manual(
+    values = c("intervention" = int_col, "control" = "black"), guide = "none"
+  ) +
+  scale_colour_manual(
+    values = c("intervention" = int_col, "control" = "black"), guide = "none"
+  ) +
+  scale_linetype_manual(
+    values = c("intervention" = 1, "control" = 2), guide = "none"
+  ) +
+  labs(
+    x = "victimisation score", y = "density",
+    title = "**Victimisation distribution in {.int_col intervention} 
+                 and {.cont_col control group} by wave**"
+  ) +
+  facet_wrap(~wave) +
+  custom_theme(gridlines = "both")
+
+```
+
+# Modelling
+
+As can be seen on the density plots above, victimisation generally tends to be 
+zero-inflated, and is thus best captured by zero-inflated or hurdle models.
+Among those who are bullied, severity of victimisation follows a roughly normal
+distribution. This calls for a a custom hurdle-gaussian model adopted from @heiss2022, 
+which accounts for both parts: the hurdle part -- whether a pupil experiences any bullying at all,
+and a gaussian part -- for pupils who do experience bullying, what is the severity.
+
+We can define a hierarchical model where students are nested within classes, 
+and classes are nested within schools, while controling for age and gender. 
+The primary focus is the interaction effect of group (intervention vs. control) 
+and wave.
+
+```{r vic_trans}
+vic_shift <- abs(min(d_mirt$vic, na.rm = TRUE))
+
+# shift vic values to 0 and above
+d_mirt <- d_mirt |>
+  mutate(vic_shifted = vic + vic_shift)
+```
+
+```{r vic_hg_model}
+#| echo: true
+#| include: false
+
+if (file.exists(here(models_dir, "vic_model_hurdle_gaus.rds")) & 
+    params$run_models_again == FALSE) {
+  vic_model_hurdle_gaus <- read_rds(here(models_dir, "vic_model_hurdle_gaus.rds"))
+} else {
+  vic_model_hurdle_gaus <- brm(
+    formula = bf(
+      vic_shifted ~ gender + age +
+        exp_group * wave +
+        (1 | school_id / class_group / pupil_id),
+      hu ~ gender + age + exp_group * wave +
+        (1 | school_id)
+    ),
+    control = list(adapt_delta = 0.99),
+    family = hurdle_gaussian,
+    prior = c(
+      # gaussian mean (mu)
+      set_prior("normal(1.5, 0.5)", class = "Intercept", dpar = "mu"),
+      # gaussian SD (sigma)
+      set_prior("normal(0.5, 0.1)", class = "sigma"),
+      # coefficients
+      set_prior("normal(0, 1)", class = "b")
+    ),
+    stanvars = stanvars,
+    iter = iter,
+    chains = chains,
+    warmup = warmup,
+    seed = bayes_seed,
+    backend = "cmdstanr",
+    threads = threading(2),
+    data = d_mirt
+  )
+  write_rds(vic_model_hurdle_gaus, here(models_dir, "vic_model_hurdle_gaus.rds"))
+}
+```
+
+
+```{r vic_hg_pp_check}
+#| fig-align: center
+
+# looks ok
+vic_hg_pp <- pp_check(vic_model_hurdle_gaus)
+
+vic_hg_pp +
+  scale_color_manual(values = c(int_col, "black"), guide = NULL) +
+  labs(
+    title = "**Posterior probability check**",
+    subtitle = "Victimisation scores were shifted to be 0 and above.",
+    x = "victimisation (shifted)"
+  ) +
+  custom_theme(gridlines = "x")
+```
+
+```{r mod_summary}
+# broom.mixed::tidy(vic_model_hurdle_gaus) |> 
+#   kable(digits = 2) |> 
+#   kable_styling()
+```
+
+```{r contrasts_table}
+#| fig-align: center
+#| echo: true
+
+group_contrasts_by_wave <- avg_comparisons(vic_model_hurdle_gaus,
+  type = "prediction",
+  variables = "exp_group", by = "wave",
+  allow_new_levels = TRUE
+)
+
+pd_group_contrasts_by_wave <- group_contrasts_by_wave |>
+  posterior_draws()
+
+contrasts_table <- pd_group_contrasts_by_wave |> 
+  mutate(wave = factor(wave, levels = c("baseline", "wave_1", "wave_2"),
+                       labels = c("baseline", "1. wave (+8 months)", 
+                                  "2. wave (+20 months)"))) |> 
+  group_by(wave) |> 
+  summarise(median_hdi(draw)) |> 
+  select(wave:ymax)
+
+contrasts_table |> 
+  kable(caption = "Anti-bullying programme effect on victimisation scores",
+        col.names = c("wave of measurement", "estimate", "lower", "upper"),
+        digits = 2) |> 
+  kable_styling() |> 
+  footnote(general = "95 % credibility intervals", threeparttable = TRUE)
+```
+
+\
+
+Based on the fitted model, we can estimate that after 20 months of
+programme implementation, pupils in intervention schools will, on average, 
+exhibit victimisation scores lower by approx. `r round(contrasts_table$y[3], 1)` 
+in comparison to control schools.
+
+```{r prog_effect}
+#| fig-align: center
+
+pd_group_contrasts_by_wave |>
+    mutate(wave = factor(wave, levels = c("baseline", "wave_1", "wave_2"),
+                       labels = c("baseline", "1. wave (+8 months)", 
+                                  "2. wave (+1 year)"))) |> 
+  ggplot(
+    aes(
+      x = wave,
+      y = draw,
+      slab_fill = after_stat(level)
+    )
+  ) +
+  geom_hline(aes(yintercept = 0), colour = lightblack,
+             linetype = "dashed", size = 1) +
+  stat_halfeye(
+    .width = c(0.8, 0.95),
+    point_interval = "median_hdi",
+    slab_color = NA
+  ) +
+  scale_color_manual(
+    values = c(colorspace::lighten(int_col, amount = 0.3), int_col),
+    na.value = colorspace::lighten(int_col, amount = 0.6),
+    aesthetics = "slab_fill",
+    guide = "none"
+  ) +
+  labs(
+    title = "**{.int_highlight Anti-bullying programme} effect
+                 on victimisation scores**",
+    subtitle = "The plot is showing the distribution of the estimated 
+    average marginal effect of the intervention by wave.",
+    x = "wave of measurement",
+    y = "average marginal effect",
+    caption = "80% and 95% credibility intervals"
+  )
+```
+  
+We can also visualize this difference by plotting both groups' development over
+time.
+
+```{r vic_hg_dev}
+#| fig-align: center
+
+group_preds_by_wave <- avg_predictions(vic_model_hurdle_gaus,
+  by = c("wave", "exp_group"),
+  type = "prediction",
+  allow_new_levels = TRUE
+)
+
+pd_group_preds_by_wave <- group_preds_by_wave |>
+  posterior_draws()
+
+(main_vic_plot <- pd_group_preds_by_wave %>%
+  mutate(draw - abs(min(d_mirt$vic, na.rm = TRUE)),
+         wave = factor(wave, levels = c("baseline", "wave_1", "wave_2"),
+                       labels = c("baseline", "1. wave (+8 months)", 
+                                  "2. wave (+1 year)"))) |> 
+  ggplot(
+    aes(
+      x = wave,
+      y = draw,
+      fill = exp_group,
+      col = exp_group
+    )
+  ) +
+  stat_pointinterval(
+    .width = c(0.8, 0.95),
+    point_interval = "median_hdi",
+    position = position_dodge(width = 0.1)
+  ) +
+  stat_lineribbon(
+    alpha = .05,
+    .width = c(0.8, 0.95),
+    point_interval = "median_hdi"
+  ) +
+  labs(
+    title = glue(
+      "**Victimisation development**"
+    ),
+    caption = "80% and 95% credibility intervals",
+    subtitle = "Despite similar baseline victimisation levels in both groups,
+    {.int_col **intervention schools**} exhibit a significantly more positive development after
+    baseline.",
+    x = "wave of measurement",
+    y = "average predicted victimisation median"
+  ) +
+  scale_fill_manual(
+    values = c("intervention" = int_col, "control" = lightgray),
+    guide = "none"
+  ) +
+  scale_colour_manual(
+    values = c("intervention" = int_col, "control" = lightgray),
+    guide = "none"
+  ) +
+  custom_theme("both")
+)
+```
+
+But what exactly does this difference mean in practical terms?
+We can binarize the victimisation score based on a cut-off, that will determine
+where we draw the line to label a pupil as being victimised. One such (arbitrary) cut-off
+we could look at is 1, meaning we treat pupils with victimisation scores above
+1 standard deviation as being victimised. Then we can fit a binomial model.
+
+```{r vic_bin_model}
+#| include: false
+
+d_mirt <- d_mirt |> 
+  mutate(vic_bin = ifelse(vic > 1, 1, 0))
+
+if (file.exists(here(models_dir, "vic_model_bin1sd.rds")) &
+    params$run_models_again == FALSE) {
+  vic_model_bin1sd <- read_rds(here(
+    models_dir, "vic_model_bin1sd.rds"))
+} else {
+  vic_model_bin1sd <- brm(
+    family = bernoulli,
+    formula = bf(
+      vic_bin ~
+        gender + age + exp_group * wave +
+        (1 | school_id / class_group / pupil_id)
+    ),
+    data = d_mirt,
+    iter = iter,
+    chains = chains,
+    seed = bayes_seed,
+    warmup = warmup
+  )
+  write_rds(vic_model_bin1sd, here(
+    models_dir, "vic_model_bin1sd.rds"))
+}
+```
+
+```{r vic_bin_pp_check}
+#| fig-align: center
+
+vic_bin_pp <- pp_check(vic_model_bin1sd)
+
+vic_bin_pp +
+  scale_color_manual(values = c(int_col, "black"), guide = NULL) +
+  labs(
+    title = "**Posterior probability check**",
+    subtitle = "Victimisation scores were binarized.",
+    x = "victimisation (binarized)"
+  ) +
+  custom_theme(gridlines = "x")
+```
+
+
+```{r vic_bin_dev}
+#| fig-align: center
+
+newdata <- vic_model_bin1sd$data |> 
+  droplevels.data.frame()
+
+vic_bin_avg_pred <- avg_predictions(vic_model_bin1sd,
+  by = c("wave", "exp_group"),
+  newdata = newdata
+)
+
+pd_vic_bin_avg_pred <- vic_bin_avg_pred |>
+  posterior_draws()
+
+pd_vic_bin_avg_pred %>%
+  mutate(wave = factor(wave, levels = c("baseline", "wave_1", "wave_2"),
+                       labels = c("baseline", "1. wave (+8 months)", 
+                                  "2. wave (+1 year)"))) |> 
+  ggplot(
+    aes(
+      x = wave,
+      y = draw,
+      fill = exp_group,
+      col = exp_group
+    )
+  ) +
+  stat_pointinterval(
+    .width = c(0.8, 0.95),
+    point_interval = "median_hdi",
+    position = position_dodge(width = 0.1)
+  ) +
+  stat_lineribbon(
+    alpha = .05,
+    .width = c(0.8, 0.95),
+    point_interval = "median_hdi"
+  ) +
+  labs(
+    title = glue(
+      "**Victimisation development**"
+    ),
+    caption = "80% and 95% credibility intervals",
+    subtitle = "Despite similar baseline victimisation levels in both groups,
+    {.int_col **intervention schools**} exhibit a significantly more positive development after
+    baseline.",
+    x = "wave of measurement",
+    y = "average predicted victimisation  \nprevalence median"
+  ) +
+  scale_fill_manual(
+    values = c("intervention" = int_col, "control" = lightgray),
+    guide = "none"
+  ) +
+  scale_colour_manual(
+    values = c("intervention" = int_col, "control" = lightgray),
+    guide = "none"
+  ) +
+  scale_y_percent() +
+  custom_theme("both")
+```
+
+The trend is similar to the hurdle-gaussian model and shows a notably lower 
+prevalence of victimisation in intervention schools after 20 months from baseline.
+
+```{r vic_bin_by_group}
+vic_plot_by_group <- ggplot(pd_vic_bin_avg_pred, aes(
+  x = draw, fill = exp_group,
+  col = exp_group
+)) +
+  stat_halfeye(
+    .width = c(0.8, 0.95),
+    point_interval = "median_hdi",
+    alpha = .9
+  ) +
+  scale_x_percent_cz() +
+  scale_fill_manual(values = c(
+    "intervention" = int_col,
+    "control" = lightgray
+  ), guide = "none") +
+  scale_colour_manual(values = c(
+    "intervention" = int_col,
+    "control" = darkgray
+  ), guide = "none") +
+  theme_schola("x", base_size = 16) +
+  labs(y = NULL, x = "Average victimisation prevalence") +
+  theme(axis.text.y = element_blank()) +
+  facet_wrap(
+    ~ factor(wave,
+      levels = c("baseline", "wave_1", "wave_2"),
+      labels = c("baseline", "1. wave (+8 months)", 
+                                  "2. wave (+1 year)")
+    ),
+    ncol = 1
+  )
+```
+
+
+```{r vic_bin_diff}
+vic_bin_avg_pred2 <- avg_comparisons(vic_model_bin1sd,
+  variables = "exp_group", by = "wave",
+  newdata = newdata
+) %>%
+  posterior_draws()
+
+vic_bin_avg_pred2_intervals <- vic_bin_avg_pred2 |>
+  group_by(contrast, wave) |>
+  median_hdi(draw, .width = c(0.8, 0.95))
+
+estim_4text <- vic_bin_avg_pred2_intervals  |>
+	filter(wave == "wave_2", .width == 0.95)  |>
+	select(.upper, .lower)  |>
+	mutate(across(everything(), \(x) {
+			      scales::number(abs(x), scale = 100, 
+					     accuracy = .1, suffix = " pp.")
+    }
+	))  |>
+	paste0(collapse = "--")
+
+vic_plot_diff <- ggplot(vic_bin_avg_pred2, 
+                        aes(x = draw, fill = contrast, pattern_fill = contrast)) +
+  geom_density_pattern(
+    pattern = "stripe",
+    pattern_density = 0.5,
+    pattern_spacing = 0.2,
+    pattern_size = 0,
+    trim = TRUE,
+    linewidth = 0
+  ) +
+  geom_pointinterval(
+    data = vic_bin_avg_pred2_intervals,
+    aes(x = draw, xmin = .lower, xmax = .upper)
+  ) +
+  guides(fill = "none", pattern_fill = "none") +
+  scale_fill_manual(values = c(lightgray), guide = "none") +
+  scale_pattern_fill_manual(values = c(int_col, lightgray), guide = "none") +
+  scale_x_percent_cz(suffix = " pp.") +
+  scale_y_continuous(expand = c(0, 0.1)) +
+  facet_wrap(
+    ~ factor(wave,
+      levels = c("baseline", "wave_1", "wave_2"),
+      labels = c("baseline", "1. wave (+8 months)", 
+                                  "2. wave (+20 months)")
+    ),
+    ncol = 1
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_schola("x", base_size = 16) +
+  theme(axis.text.y = element_blank()) +
+  labs(y = NULL, x = "Difference in victimisation prevalence")
+```
+
+Based on the model, after 20 months of programme implementation, 
+we would expect (with a 95 % probability) intervention schools to have 
+victimisation lower by `r estim_4text` in comparison to control schools.
+
+```{r vic_bin_marg_eff}
+#| fig-align: center
+
+(vic_bin_marg_eff_plot <- vic_plot_by_group + vic_plot_diff +
+  plot_annotation(
+    title = paste0("**After approx. 2 years of implementation, 
+    {.int_col intervention schools} have, on average, ~", 
+    scales::label_percent()(abs(vic_bin_avg_pred2_intervals$draw[6])),
+    " percentage points lower victimisation than {.darkgray control schools}**"),
+    caption = "80% a 95% credibility intervals"
+  ))
+```
+
+<details>
+<summary>Used packages</summary>
+```{r cite_pkgs, results='asis'}
+cite_packages()
+```
+</details>
