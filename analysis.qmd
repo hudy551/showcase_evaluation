@@ -330,7 +330,9 @@ contrasts_table |>
 Based on the fitted model, we can estimate that after 20 months of
 programme implementation, pupils in intervention schools will, on average, 
 exhibit victimisation scores lower by approx. `r round(contrasts_table$y[3], 1)` 
-in comparison to control schools.
+in comparison to control schools. Reported victimisation increases for both groups
+between the first two waves, most likely due to the timing of the measurement 
+(beginning vs. end of the school year).
 
 ```{r prog_effect}
 #| fig-align: center
